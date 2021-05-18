@@ -1,5 +1,5 @@
-from PyQt5 import QtCore, QtGui, QtWidgets
-from cryptor import EncryptionManager
+from PyQt5 import QtCore, QtWidgets
+from cryptor import encryption, decryption
 from hashlib import sha256
 from zipfile import ZipFile
 import login_GUI
@@ -10,13 +10,12 @@ import os
 
 class Worker(QtCore.QThread):
     
-    def __init__(self, name, path, manager, mode='encrypt'):
+    def __init__(self, name, path, key, mode='encrypt'):
         super().__init__()
         self.mode = mode
         self.name = name
         self.path = path
-        self.manager = manager
-        self.manager.key = self.manager.key[:32]
+        self.key = key[:32]
 
     
     def run(self):
@@ -41,7 +40,7 @@ class Worker(QtCore.QThread):
                 data = (file + '|').encode() + data
                 path = self.name + '/' + file.split('.')[0] + '.cbc'
                 with open(path, 'wb') as writer:
-                    cipherdata = self.manager.encryption(data)
+                    cipherdata = encryption(data, self.key)
                     writer.write(cipherdata)
             
             if self.path.endswith('.zip'):
@@ -52,7 +51,9 @@ class Worker(QtCore.QThread):
 
             with open(self.name + '/' + self.path + '.cbc', 'rb') as reader:
                 cipherdata = reader.read()
-                data = self.manager.decryption(cipherdata)
+                data = decryption(cipherdata, self.key)
+                    
+
                 file_name = (data.split(b'|')[0])
                 data = data[len(file_name) + 1:]
                 with open(self.name + '/' + file_name.decode(), 'wb') as writer:
@@ -128,20 +129,24 @@ class EncryTaida(QtWidgets.QWidget):
         message = QtWidgets.QMessageBox()
         if 'data.json' not in os.listdir():
             self.save({})
+        
+        with open('data.json') as f:
+            data = json.loads(f.read())
 
-        try: data = self.load()
-        except: data = {} #if data file is empty.
+        data = self.load(data)
+        try: data = self.load(data)
+        except: data = {}#if data file is empty.
 
         self.username = self.login.username.text()
         if  self.username in data:
             paswd = self.login.password.text()
-            key = (paswd + data[self.username]['salt'])[:32]
-            if sha256(key.encode()).hexdigest() == data[self.username]['key']:
+            self.key = (paswd.encode() + data[self.username]['salt'])[:32]
+            if sha256(self.key).hexdigest() == data[self.username]['key']:
                 message.information(
                     self, 'welcome', f'Wellcome {data[self.username]["name"]}.',
                     message.Close, message.Close
                     )
-                self.encrypt(key)
+                self.encrypt()
             
             else:
                 message.information(self, 'Entry error', 'Username or password' \
@@ -158,8 +163,10 @@ class EncryTaida(QtWidgets.QWidget):
         message = QtWidgets.QMessageBox()
         if 'data.json' not in os.listdir():
             self.save({})
-
-        try: data = self.load()
+        with open('data.json') as f:
+            data = json.loads(f.read())
+        
+        try: data = self.load(data)
         except: data = {} #if data file is empty.
             
         if username in data:
@@ -191,19 +198,20 @@ class EncryTaida(QtWidgets.QWidget):
             message.Close, message.Close
             )
         
-        salt = os.urandom(24).decode('iso-8859-1')
-        key = (paswd + salt)[:32]
-        data[username] = {'name': name, 'salt': salt, 'key': sha256(key.encode()).hexdigest(), 'files': {}}
+        salt = os.urandom(24)
+        key = (paswd.encode() + salt)[:32]
+        data[username] = {'name': name, 'salt': salt, 'key': sha256(key).hexdigest(), 'files': {}}
         
         self.save(data)
 
-    def encrypt(self, key):
+    def encrypt(self):
         self.log_in_form.close()
         self.encrypt_form.show()
 
-        self.manager = EncryptionManager(key.encode())
+        with open('data.json') as f:
+            data = json.loads(f.read())
 
-        data = self.load()
+        data = self.load(data)
         data = data[self.username]
 
         self.name = data["name"]
@@ -235,15 +243,18 @@ class EncryTaida(QtWidgets.QWidget):
         self.main.laoding_label.show()
         try:
             path = self.main.path.text()
-            salt = os.urandom(8).decode('iso-8859-1')
-            self.manager.key = self.manager.key[:-8] + salt.encode()
+            salt = os.urandom(8)
+            self.key = self.key[:-8] + salt
             
-            data = self.load()
+            with open('data.json') as f:
+                data = json.loads(f.read())
+
+            data = self.load(data)
             file = '.'.join(os.path.basename(path).split('.')[:-1])
             data[self.username]['files'][file] = salt
             self.save(data)
 
-            self.worker = Worker(self.name, path, self.manager)
+            self.worker = Worker(self.name, path, self.key)
             
             self.worker.start()
             self.worker.finished.connect(
@@ -271,11 +282,13 @@ class EncryTaida(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.Ok, QtWidgets.QMessageBox.Ok
                 )
 
-        data = self.load()
-        salt = data[self.username]['files'][file].encode()
-        self.manager.key = self.manager.key[:-8] + salt
+        with open('data.json') as f:
+            data = json.loads(f.read())
+        data = self.load(data)
+        salt = data[self.username]['files'][file]
+        self.key = self.key[:-8] + salt
             
-        self.worker = Worker(self.name, file, self.manager, 'decrypt')
+        self.worker = Worker(self.name, file, self.key, 'decrypt')
         self.worker.start()
         self.worker.finished.connect(
             lambda: self.update('Decryption')
@@ -310,14 +323,34 @@ class EncryTaida(QtWidgets.QWidget):
             self.login.password.clear()
             self.log_in_form.show()
     
-    def load(self):
-        with open('data.json') as f:
-            return json.loads(f.read())
+    def load(self, data):
         
-    def save(self, data):
-        with open('data.json', 'w') as f:
-            f.write(json.dumps(data))
+        for k, v in data.items():
+            if isinstance(v, list):
+                data[k] = bytes(v)
             
+            if isinstance(v, dict):
+                data[k] = self.load(v)
+        
+        return data
+
+        
+    def save(self, data, save=True):
+        
+        for k, v in data.items():
+            if isinstance(v, bytes):
+                data[k] = list(v)
+            
+            if isinstance(v, dict) and v:
+                data[k] = self.save(v, False)
+
+        if save:
+            with open('data.json', 'w') as f:
+                f.write(json.dumps(data))
+        
+        else:
+            return data
+        
 
 if __name__ == '__main__':
     import sys
