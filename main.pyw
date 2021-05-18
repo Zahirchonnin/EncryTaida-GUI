@@ -157,7 +157,7 @@ class EncryTaida(QtWidgets.QWidget):
         username = self.sing_up.username.text()
         message = QtWidgets.QMessageBox()
         if 'data.json' not in os.listdir():
-            self.data({})
+            self.save({})
 
         try: data = self.load()
         except: data = {} #if data file is empty.
